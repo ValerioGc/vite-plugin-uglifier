@@ -1,0 +1,232 @@
+name: prepare_release
+# This workflow prepares a release by bumping the version (if needed), building, testing and creating a GitHub Release.
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # 1) Check and bump version if tag already exists
+  check-deploy-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_updated_version.outputs.version }}
+      initial_sha: ${{ steps.get_initial_sha.outputs.initial_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout main branch
+        with:
+          ref: main
+
+      - name: Record current commit SHA
+        id: get_initial_sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "initial_sha=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'Starter BOT (CI)'
+          git config --global user.email 'actions@github.com'
+
+      - name: Get initial version from package.json
+        id: get_initial_version
+        run: |
+          VERSION=$(jq -r .version package.json)
+          echo "initial_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check for existing version tag and bump if exists
+        id: check_version_tag
+        run: |
+          CURRENT_VERSION=$(jq -r .version package.json)
+          TAG="RELEASE_V_${CURRENT_VERSION}"
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
+            echo "Version $TAG already exists. Bumping version."
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            NEW_PATCH=$((patch + 1))
+            NEW_VERSION="$major.$minor.$NEW_PATCH"
+            echo "New version: $NEW_VERSION"
+            # update package.json with new version
+            jq --arg newVersion "$NEW_VERSION" '.version = $newVersion' package.json > package.tmp && mv package.tmp package.json
+            git add package.json
+            git commit -m "Bump version from $CURRENT_VERSION to $NEW_VERSION"
+            git push origin main
+          fi
+
+      - name: Get updated version from package.json
+        id: get_updated_version
+        run: |
+          UPDATED_VERSION=$(jq -r .version package.json)
+          echo "version=$UPDATED_VERSION" >> $GITHUB_OUTPUT
+
+  # 2) Build and run unit tests
+  build-and-test:
+    needs: check-deploy-version
+    if: success()
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x]
+    outputs:
+      push_changes: ${{ steps.push_changes.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout main branch
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        id: test_project
+        run: npm run test
+
+      - name: Build project
+        id: build_project
+        run: npm run build
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+
+      - name: Update compiled files in dist
+        id: update_build
+        run: |
+          git add dist
+          if ! git diff --cached --quiet; then
+            git commit -m "Automatic update compiled files in dist"
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Push changes to main
+        id: push_changes
+        if: steps.update_build.conclusion == 'success'
+        run: git push origin main
+
+  # 3) Create GitHub release with changelog
+  create-release:
+    needs: [check-deploy-version, build-and-test]
+    if: success()
+    runs-on: ubuntu-latest
+    outputs:
+      create_release_outcome: ${{ steps.create_release.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout main branch
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'Release BOT (CI)'
+          git config --global user.email 'release@github.com'
+
+      - name: Get content of CHANGELOG.txt
+        id: get_changelog
+        run: |
+          echo "Checking if CHANGELOG.txt exists..."
+          if [ -f CHANGELOG.txt ] && [ -s CHANGELOG.txt ]; then
+            CHANGELOG=$(cat CHANGELOG.txt)
+          else
+            CHANGELOG="<p><b>General bugfix</b> and <b>optimization</b>.</p>"
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: "RELEASE_V_${{ needs.check-deploy-version.outputs.version }}"
+          release_name: "Release RELEASE_V_${{ needs.check-deploy-version.outputs.version }}"
+          body: |
+            <h1>Changelog Version: ${{ needs.check-deploy-version.outputs.version }}</h1>
+            <br/>
+            ${{ steps.get_changelog.outputs.changelog }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Empty CHANGELOG.txt
+        id: empty_changelog
+        run: |
+          if [ -f CHANGELOG.txt ]; then
+            echo -n "" > CHANGELOG.txt
+            git add CHANGELOG.txt
+            if ! git diff --staged --quiet; then
+              git commit -m "Empty CHANGELOG after release"
+              git push origin main
+            fi
+          fi
+
+  # 4) Rollback in case of failure
+  rollback-all:
+    needs: [check-deploy-version, create-release]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout main branch (rollback)
+        with:
+          ref: main
+
+      - name: Setup Node.js for rollback
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Configure Git for rollback
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+
+      - name: Reset Release and Tag
+        if: needs.create-release.outputs.create_release_outcome == 'success'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check-deploy-version.outputs.version }}
+        run: |
+          TAG="RELEASE_V_${VERSION}"
+          # Delete GitHub release
+          RELEASE=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG)
+          if [ "$(echo $RELEASE | jq -r .message)" != "Not Found" ]; then
+            ID=$(echo $RELEASE | jq -r .id)
+            curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/$ID
+          fi
+          # Delete the tag
+          git fetch --tags
+          if git rev-parse $TAG >/dev/null 2>&1; then
+            git tag -d $TAG
+            git push origin :refs/tags/$TAG
+          fi
+
+      - name: Roll back to initial commit
+        run: |
+          git fetch origin
+          git reset --hard ${{ needs.check-deploy-version.outputs.initial_sha }}
+          git push origin main --force

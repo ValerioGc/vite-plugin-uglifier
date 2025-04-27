@@ -1,0 +1,21 @@
+import { Plugin } from 'vite';
+import { Options } from '.';
+declare function isValidCSSName(str: string): boolean;
+declare function isRemappableToken(token: string): boolean;
+declare function getNewClassName(index: number): string;
+declare function collectSelectorsFromCss(css: string): {
+    classes: Set<string>;
+    ids: Set<string>;
+};
+declare function replaceClassesInCss(css: string, mapping: Record<string, string>): string;
+declare function replaceIdsInCss(css: string, mapping: Record<string, string>): string;
+declare function replaceClassesInHtml(html: string, mapping: Record<string, string>): string;
+declare function replaceIdsInHtml(html: string, mapping: Record<string, string>): string;
+declare function replaceClassesInJs(js: string, mapping: Record<string, string>): string;
+declare function replaceIdsInJs(js: string, mapping: Record<string, string>): string;
+declare function replaceCSSSelectorsInJs(js: string, classMapping: Record<string, string>, idMapping: Record<string, string>): string;
+declare function replaceClassListManipulationInJs(js: string, mapping: Record<string, string>): string;
+declare function replaceClassNameAssignmentInJs(js: string, mapping: Record<string, string>): string;
+declare function removeTextArgumentInJs(js: string): string;
+export default function vitePluginUglifier(options?: Options): Plugin;
+export { isValidCSSName, isRemappableToken, getNewClassName, collectSelectorsFromCss, replaceClassesInCss, replaceIdsInCss, replaceClassesInHtml, replaceIdsInHtml, replaceClassesInJs, replaceIdsInJs, replaceCSSSelectorsInJs, replaceClassListManipulationInJs, replaceClassNameAssignmentInJs, removeTextArgumentInJs, };
