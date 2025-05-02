@@ -4,7 +4,7 @@ import dts from 'vite-plugin-dts';
 export default defineConfig({
   build: {
     emptyOutDir: true,
-    target: 'node18', 
+    target: 'node20', 
     lib: {
       entry: 'src/index.mts',
       name: 'vite-plugin-uglifier',
